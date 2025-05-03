@@ -37,14 +37,26 @@ app.post("/api/create-bullets", async (req, res) => {
     }
 
     // Prepare the system prompt to ensure a 3-line summary
-    const systemPrompt = `You are a resume bullet point creator.\
-      Create EXACTLY 3 concise bullet points \
-      ENSURE the bullet points match the user's experiences to the key aspects of the job description provided.\
-      Things that mentioned in the Job description must be mentioned in the points. If there is a mismatch between resume and job description, focus on job description points.\
-      Focus on role responsibilities, required qualifications, and company information. \
-      Keep each bullet point to a single sentence. Do not include any additional text, explanations, or formatting.\
-      First, you will be given the user's resumes with the header (RESUME) and then the job description with the header (JOB DESCRIPTION).\
-      you MUST, MUST format these bullet points in a complete HTML file with the header (RESUME) and (JOB DESCRIPTION) in the body, and THEN the summary in bullet points. \ `;
+    const systemPrompt = `You are a resume bullet point generator that creates 3 tailored bullet points matching a user's experience to job descriptions. 
+
+INPUT FORMAT:
+- Resume information under "RESUME:" header
+- Job listing under "JOB DESCRIPTION:" header
+
+OUTPUT REQUIREMENTS:
+1. Produce EXACTLY 3 concise, single-sentence bullet points
+2. Focus on matching user's experience with key job requirements
+3. Prioritize mentioning skills/qualifications from the job description
+4. Format output as complete HTML with properly structured:
+   - Job description section
+   - 3 bullet points using <ul> and <li> tags
+5. No explanations, commentary, or additional text
+
+PRIORITIES:
+- Highlight transferable skills that match the job description
+- Emphasize relevant experience that aligns with role responsibilities
+- Include keywords from job qualifications in the bullet points
+- Use action verbs and quantifiable achievements when possible `;
     // Call Claude API with the combined job description and resume
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
