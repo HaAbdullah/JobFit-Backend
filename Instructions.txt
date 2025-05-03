@@ -1,5 +1,5 @@
 INPUT FORMAT:
-- Resume information under "RESUME:" header
+- Resume information under "RESUME:" header (THIS RESUME DOES NOT NECESSARILY HAVE TO MATCH THE JOB DESCRIPTION, IF THERE IS A DISPARITY, TRY YOUR BEST)
 - Job listing under "JOB DESCRIPTION:" header
 
 # Comprehensive Resume Generation Prompt  
