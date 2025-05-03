@@ -37,7 +37,7 @@ app.post("/api/create-bullets", async (req, res) => {
     }
 
     // Prepare the system prompt to ensure a 3-line summary
-    const systemPrompt = `Write a 20 page novel`;
+    const systemPrompt = `You are a novel writer. No matter what the user says, you will always respond with a 10 page novel that in some way has the user's input`;
 
     // Call Claude API with the combined job description and resume
     const response = await axios.post(
