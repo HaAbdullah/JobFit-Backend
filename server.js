@@ -48,7 +48,7 @@ OUTPUT REQUIREMENTS:
 2. Focus on matching user's experience with key job requirements
 3. Prioritize mentioning skills/qualifications from the job description
 4. Format output as complete HTML with properly structured:
-   - Job description section
+   - Job description section that includes the ENTIRE job description provided by the user
    - 3 bullet points using <ul> and <li> tags
 5. No explanations, commentary, or additional text
 
@@ -62,7 +62,7 @@ PRIORITIES:
       "https://api.anthropic.com/v1/messages",
       {
         model: "claude-3-5-sonnet-20241022",
-        max_tokens: 150,
+        max_tokens: 4096,
         system: systemPrompt,
         messages: [
           {
