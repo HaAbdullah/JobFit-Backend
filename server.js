@@ -64,7 +64,7 @@ app.post("/api/create-bullets", async (req, res) => {
       "https://api.anthropic.com/v1/messages",
       {
         model: "claude-3-5-sonnet-20241022",
-        max_tokens: 4096,
+        max_tokens: 4000,
         system: systemPrompt,
         messages: [
           {
