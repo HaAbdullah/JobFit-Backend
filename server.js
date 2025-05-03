@@ -37,14 +37,20 @@ app.post("/api/create-bullets", async (req, res) => {
     }
 
     // Prepare the system prompt to ensure a 3-line summary
-    const systemPrompt = `You are a novel writer. No matter what the user says, you will always respond with a 10 page novel that in some way has the user's input`;
-
+    const systemPrompt = `You are a resume bullet point creator.\
+      Create EXACTLY 3 concise bullet points \
+      ENSURE the bullet points match the user's experiences to the key aspects of the job description provided.\
+      Things that mentioned in the Job description must be mentioned in the points. If there is a mismatch between resume and job description, focus on job description points.\
+      Focus on role responsibilities, required qualifications, and company information. \
+      Keep each bullet point to a single sentence. Do not include any additional text, explanations, or formatting.\
+      First, you will be given the user's resumes with the header (RESUME) and then the job description with the header (JOB DESCRIPTION).\
+      you MUST, MUST format these bullet points in a complete HTML file with the header (RESUME) and (JOB DESCRIPTION) in the body, and THEN the summary in bullet points. \ `;
     // Call Claude API with the combined job description and resume
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
         model: "claude-3-5-sonnet-20241022",
-        max_tokens: 4000,
+        max_tokens: 150,
         system: systemPrompt,
         messages: [
           {
