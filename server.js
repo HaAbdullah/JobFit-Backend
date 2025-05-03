@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(express.json());
 app.use(cors());
-const systemPrompt = fs.readFileSync("./instructions.txt", "utf8");
+const systemPrompt = fs.readFileSync("./Instructions.txt", "utf8");
 
 // Health check endpoint
 app.get("/", (req, res) => {
