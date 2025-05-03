@@ -1,3 +1,4 @@
+const fs = require("fs");
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
@@ -9,6 +10,7 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(express.json());
 app.use(cors());
+const systemPrompt = fs.readFileSync("./instructions.txt", "utf8");
 
 // Health check endpoint
 app.get("/", (req, res) => {
@@ -36,27 +38,27 @@ app.post("/api/create-bullets", async (req, res) => {
       return res.status(500).json({ error: "API key not configured" });
     }
 
-    // Prepare the system prompt to ensure a 3-line summary
-    const systemPrompt = `You are a resume bullet point generator that creates 3 tailored bullet points matching a user's experience to job descriptions. 
+    //     // Prepare the system prompt to ensure a 3-line summary
+    //     const systemPrompt = `You are a resume bullet point generator that creates 3 tailored bullet points matching a user's experience to job descriptions.
 
-INPUT FORMAT:
-- Resume information under "RESUME:" header
-- Job listing under "JOB DESCRIPTION:" header
+    // INPUT FORMAT:
+    // - Resume information under "RESUME:" header
+    // - Job listing under "JOB DESCRIPTION:" header
 
-OUTPUT REQUIREMENTS:
-1. Produce EXACTLY 3 concise, single-sentence bullet points
-2. Focus on matching user's experience with key job requirements
-3. Prioritize mentioning skills/qualifications from the job description
-4. Format output as complete HTML with properly structured:
-   - Job description section that includes the ENTIRE job description provided by the user
-   - 3 bullet points using <ul> and <li> tags
-5. No explanations, commentary, or additional text
+    // OUTPUT REQUIREMENTS:
+    // 1. Produce EXACTLY 3 concise, single-sentence bullet points
+    // 2. Focus on matching user's experience with key job requirements
+    // 3. Prioritize mentioning skills/qualifications from the job description
+    // 4. Format output as complete HTML with properly structured:
+    //    - Job description section that includes the ENTIRE job description provided by the user
+    //    - 3 bullet points using <ul> and <li> tags
+    // 5. No explanations, commentary, or additional text
 
-PRIORITIES:
-- Highlight transferable skills that match the job description
-- Emphasize relevant experience that aligns with role responsibilities
-- Include keywords from job qualifications in the bullet points
-- Use action verbs and quantifiable achievements when possible `;
+    // PRIORITIES:
+    // - Highlight transferable skills that match the job description
+    // - Emphasize relevant experience that aligns with role responsibilities
+    // - Include keywords from job qualifications in the bullet points
+    // - Use action verbs and quantifiable achievements when possible `;
     // Call Claude API with the combined job description and resume
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
