@@ -458,6 +458,362 @@ app.post("/api/generate-compensation", async (req, res) => {
     });
   }
 });
+// Company Insights API endpoint
+app.post("/api/generate-company-insights", async (req, res) => {
+  try {
+    const { jobDescription } = req.body;
+    console.log(
+      "Company insights analysis - Job Description received length:",
+      jobDescription ? jobDescription.length : 0
+    );
+
+    // Check if job description is empty or undefined
+    if (!jobDescription || jobDescription.trim() === "") {
+      return res.status(400).json({ error: "Job description cannot be empty" });
+    }
+
+    // Get API key from environment variable
+    const apiKey = process.env.PERPLEXITY_API_KEY;
+
+    if (!apiKey) {
+      return res
+        .status(500)
+        .json({ error: "Perplexity API key not configured" });
+    }
+
+    // Extract company name from job description
+    const companyNameMatch =
+      jobDescription.match(/(?:company|organization|employer):\s*([^\n]+)/i) ||
+      jobDescription.match(
+        /at\s+([A-Z][a-zA-Z\s&.,]+?)(?:\s+is|\s+seeks|\s+looking)/i
+      ) ||
+      jobDescription.match(
+        /([A-Z][a-zA-Z\s&.,]+?)\s+is\s+(?:seeking|looking|hiring)/i
+      );
+
+    const companyName = companyNameMatch
+      ? companyNameMatch[1].trim().replace(/[.,]$/, "")
+      : "the company";
+
+    // Create comprehensive search query for company insights
+    const searchQuery = `${companyName} company reviews employee ratings Glassdoor Indeed LinkedIn company culture benefits workplace insights testimonials 2024 2025`;
+
+    // System prompt for company insights analysis
+    const companyInsightsPrompt = `You are a professional company research analyst. Based on the search results, create a comprehensive company insights report in JSON format. 
+
+IMPORTANT: Return ONLY valid JSON without any markdown formatting, code blocks, or additional text.
+
+The JSON should have this exact structure:
+{
+  "overview": {
+    "companyName": "Company Name",
+    "industry": "Industry Type",
+    "companySize": "Employee count or size category",
+    "founded": "Year founded (if available)",
+    "description": "Brief company description"
+  },
+  "ratings": [
+    {
+      "platform": "Platform name (e.g., Glassdoor, Indeed, LinkedIn)",
+      "rating": 4.2,
+      "reviewCount": "Number of reviews",
+      "recommendationRate": "Percentage who recommend (if available)"
+    }
+  ],
+  "reviews": [
+    {
+      "title": "Review title or summary",
+      "role": "Employee role/position",
+      "rating": 4.0,
+      "pros": "Positive aspects mentioned",
+      "cons": "Negative aspects mentioned"
+    }
+  ],
+  "culture": {
+    "values": ["Value 1", "Value 2", "Value 3"],
+    "benefits": ["Benefit 1", "Benefit 2", "Benefit 3"],
+    "workEnvironment": "Description of work environment and culture"
+  },
+  "insights": [
+    {
+      "icon": "📈",
+      "title": "Growth & Opportunities",
+      "description": "Career development and growth opportunities"
+    },
+    {
+      "icon": "💰",
+      "title": "Compensation & Benefits",
+      "description": "Salary competitiveness and benefits package"
+    },
+    {
+      "icon": "🏢",
+      "title": "Work-Life Balance",
+      "description": "Work-life balance and flexibility"
+    },
+    {
+      "icon": "👥",
+      "title": "Team & Management",
+      "description": "Management quality and team dynamics"
+    }
+  ]
+}
+
+Focus on providing accurate, recent information. If specific data is not available, use reasonable defaults or indicate "N/A". Ensure all ratings are numerical values between 1.0 and 5.0.`;
+
+    // Call Perplexity API for real-time company data
+    const perplexityResponse = await axios.post(
+      "https://api.perplexity.ai/chat/completions",
+      {
+        model: "llama-3.1-sonar-small-128k-online",
+        messages: [
+          {
+            role: "system",
+            content: companyInsightsPrompt,
+          },
+          {
+            role: "user",
+            content: `Search for comprehensive company insights: ${searchQuery}\n\nJob Description Context: ${jobDescription}`,
+          },
+        ],
+        max_tokens: 3000,
+        temperature: 0.3,
+        top_p: 0.9,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    // Get the response content
+    const responseContent = perplexityResponse.data.choices[0].message.content;
+
+    // Try to parse the JSON response
+    let parsedData;
+    try {
+      // Remove any potential markdown formatting
+      const cleanedContent = responseContent
+        .replace(/```json\s*/g, "")
+        .replace(/```\s*/g, "")
+        .trim();
+
+      parsedData = JSON.parse(cleanedContent);
+    } catch (parseError) {
+      console.error("Error parsing JSON response:", parseError);
+      // Fallback response if JSON parsing fails
+      parsedData = {
+        overview: {
+          companyName: companyName,
+          industry: "Technology",
+          companySize: "Not specified",
+          founded: "N/A",
+          description:
+            "Company information could not be retrieved at this time.",
+        },
+        ratings: [
+          {
+            platform: "Glassdoor",
+            rating: 3.5,
+            reviewCount: "N/A",
+            recommendationRate: "N/A",
+          },
+        ],
+        reviews: [
+          {
+            title: "General Employee Feedback",
+            role: "Various Positions",
+            rating: 3.5,
+            pros: "Information not available",
+            cons: "Information not available",
+          },
+        ],
+        culture: {
+          values: ["Innovation", "Collaboration", "Excellence"],
+          benefits: ["Health Insurance", "Retirement Plan", "Paid Time Off"],
+          workEnvironment: "Company culture information not available",
+        },
+        insights: [
+          {
+            icon: "📈",
+            title: "Growth & Opportunities",
+            description: "Career development information not available",
+          },
+          {
+            icon: "💰",
+            title: "Compensation & Benefits",
+            description: "Compensation information not available",
+          },
+          {
+            icon: "🏢",
+            title: "Work-Life Balance",
+            description: "Work-life balance information not available",
+          },
+          {
+            icon: "👥",
+            title: "Team & Management",
+            description: "Management information not available",
+          },
+        ],
+      };
+    }
+
+    // Format response to match expected structure
+    const responseData = {
+      content: [
+        {
+          text: JSON.stringify(parsedData),
+        },
+      ],
+    };
+
+    return res.json(responseData);
+  } catch (error) {
+    console.error("Company insights analysis error:", error.message);
+
+    // Add more detailed error logging
+    if (error.response) {
+      console.error("API response status:", error.response.status);
+      console.error("API response data:", error.response.data);
+    }
+
+    return res.status(500).json({
+      error:
+        error.message ||
+        "Unknown error occurred during company insights analysis",
+    });
+  }
+});
+
+// Keywords analysis prompt for system message
+const keywordsAnalysisPrompt = `You are an expert resume and job matching analyst. Your task is to analyze job descriptions and resume analysis results to identify matching keywords and their strategic importance.
+
+Focus ONLY on keywords that appear in BOTH the job description AND the resume analysis results. Do not mention missing keywords.
+
+IMPORTANT: Format your response as a simple list where each line follows this exact pattern:
+Keyword: Brief explanation of why this match is strategically important
+
+Examples:
+React: Demonstrates proficiency in the primary frontend framework required for this role
+Project Management: Shows leadership experience that aligns with the role's management responsibilities
+Agile: Indicates familiarity with the development methodology used by the team
+
+Do not use headers, sections, or bullet points. Just provide a clean list of keywords with their analysis, one per line.
+
+Focus on:
+- Technical skills that match
+- Soft skills that align
+- Qualifications that correspond
+- Industry terms that overlap
+
+Keep explanations concise but valuable for ATS optimization and strategic positioning.`;
+
+// Perplexity API endpoint for keywords analysis
+app.post("/api/generate-keywords", async (req, res) => {
+  try {
+    const { jobDescription, analysisResults } = req.body;
+    console.log(
+      "Keywords analysis - Job Description received length:",
+      jobDescription ? jobDescription.length : 0,
+      "Analysis Results available:",
+      !!analysisResults
+    );
+
+    // Check if job description is empty or undefined
+    if (!jobDescription || jobDescription.trim() === "") {
+      return res.status(400).json({ error: "Job description cannot be empty" });
+    }
+
+    // Check if analysis results are provided
+    if (!analysisResults) {
+      return res
+        .status(400)
+        .json({
+          error: "Analysis results are required for keyword comparison",
+        });
+    }
+
+    // Get API key from environment variable
+    const apiKey = process.env.PERPLEXITY_API_KEY;
+
+    if (!apiKey) {
+      return res
+        .status(500)
+        .json({ error: "Perplexity API key not configured" });
+    }
+
+    // Extract job title for better context
+    const jobTitleMatch =
+      jobDescription.match(/(?:job title|position|role):\s*([^\n]+)/i) ||
+      jobDescription.match(/^([^\n]+)/);
+    const jobTitle = jobTitleMatch
+      ? jobTitleMatch[1].trim()
+      : "Software Developer";
+
+    // Create analysis content combining job description and existing analysis
+    const analysisContent = `
+Job Title: ${jobTitle}
+
+Job Description:
+${jobDescription}
+
+Resume Analysis Results:
+${JSON.stringify(analysisResults, null, 2)}
+
+Please analyze and identify ONLY the keywords that appear in BOTH the job description and the resume analysis results. Return each keyword with its analysis on a separate line using the format: "Keyword: Analysis"`;
+
+    // Call Perplexity API for keywords analysis
+    const perplexityResponse = await axios.post(
+      "https://api.perplexity.ai/chat/completions",
+      {
+        model: "llama-3.1-sonar-small-128k-online",
+        messages: [
+          {
+            role: "system",
+            content: keywordsAnalysisPrompt,
+          },
+          {
+            role: "user",
+            content: analysisContent,
+          },
+        ],
+        max_tokens: 2000,
+        temperature: 0.2,
+        top_p: 0.9,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    // Format response to match expected structure
+    const responseData = {
+      content: [
+        {
+          text: perplexityResponse.data.choices[0].message.content,
+        },
+      ],
+    };
+
+    return res.json(responseData);
+  } catch (error) {
+    console.error("Keywords analysis error:", error.message);
+
+    // Add more detailed error logging
+    if (error.response) {
+      console.error("API response status:", error.response.status);
+      console.error("API response data:", error.response.data);
+    }
+
+    return res.status(500).json({
+      error: error.message || "Unknown error occurred during keywords analysis",
+    });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
