@@ -9,8 +9,18 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
-app.use(cors());
+// For comma-separated approach
+const allowedOrigins = process.env.FRONTEND_URLS?.split(",") || [
+  "http://localhost:3000",
+];
 
+// For CORS middleware
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+  })
+);
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
@@ -727,11 +737,9 @@ app.post("/api/generate-keywords", async (req, res) => {
 
     // Check if analysis results are provided
     if (!analysisResults) {
-      return res
-        .status(400)
-        .json({
-          error: "Analysis results are required for keyword comparison",
-        });
+      return res.status(400).json({
+        error: "Analysis results are required for keyword comparison",
+      });
     }
 
     // Get API key from environment variable
@@ -814,7 +822,84 @@ Please analyze and identify ONLY the keywords that appear in BOTH the job descri
     });
   }
 });
+// Add this at the top with your other imports
+const stripe = require("stripe")(process.env.VITE_STRIPE_SECRET_KEY);
 
+// Create checkout session endpoint
+app.post("/api/create-checkout-session", async (req, res) => {
+  try {
+    const { priceId, planName, userId, userEmail } = req.body;
+
+    if (!priceId || !planName || !userId) {
+      return res
+        .status(400)
+        .json({ error: "Price ID, plan name, and user ID are required" });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1,
+        },
+      ],
+      mode: "subscription",
+      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/pricing`,
+      client_reference_id: userId,
+      customer_email: userEmail,
+      metadata: {
+        planName: planName,
+        userId: userId,
+        firebaseUid: userId,
+      },
+    });
+
+    res.json({ sessionId: session.id, url: session.url });
+  } catch (error) {
+    console.error("Stripe checkout error:", error.message);
+    res.status(500).json({ error: "Failed to create checkout session" });
+  }
+});
+
+// Handle successful subscription (webhook)
+app.post(
+  "/api/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } catch (err) {
+      console.log(`Webhook signature verification failed.`, err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the event
+    switch (event.type) {
+      case "checkout.session.completed":
+        const session = event.data.object;
+        // Update user subscription in your database
+        console.log("Subscription successful:", session);
+        break;
+      case "invoice.payment_succeeded":
+        // Handle successful payment
+        break;
+      case "customer.subscription.deleted":
+        // Handle subscription cancellation
+        break;
+      default:
+        console.log(`Unhandled event type ${event.type}`);
+    }
+
+    res.json({ received: true });
+  }
+);
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
