@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+
 // For comma-separated approach
 const allowedOrigins = process.env.FRONTEND_URLS?.split(",") || [
   "http://localhost:8888",
@@ -21,6 +22,138 @@ app.use(
     credentials: true,
   })
 );
+
+// Fix: Use STRIPE_SECRET_KEY instead of VITE_STRIPE_SECRET_KEY
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+// Create checkout session endpoint
+app.post("/api/create-checkout-session", async (req, res) => {
+  try {
+    const { priceId, planName, userId, userEmail } = req.body;
+
+    if (!priceId || !planName || !userId) {
+      return res
+        .status(400)
+        .json({ error: "Price ID, plan name, and user ID are required" });
+    }
+
+    // Get frontend URL from FRONTEND_URLS (use production URL for Stripe)
+    const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
+    if (frontendUrls.length === 0) {
+      console.error("FRONTEND_URLS environment variable is not set");
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    // Use production URL (the one with https) for Stripe checkout, fallback to first URL
+    const baseUrl =
+      frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+
+    if (!baseUrl) {
+      console.error("No valid frontend URL found in FRONTEND_URLS");
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    console.log("Creating checkout session with URLs:", {
+      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/pricing`,
+    });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1,
+        },
+      ],
+      mode: "subscription",
+      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/pricing`,
+      client_reference_id: userId,
+      customer_email: userEmail,
+      metadata: {
+        planName: planName,
+        userId: userId,
+        firebaseUid: userId,
+      },
+    });
+
+    res.json({ sessionId: session.id, url: session.url });
+  } catch (error) {
+    console.error("Stripe checkout error:", error.message);
+    res.status(500).json({ error: "Failed to create checkout session" });
+  }
+});
+
+// Handle successful subscription (webhook)
+app.post(
+  "/api/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } catch (err) {
+      console.log(`Webhook signature verification failed.`, err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the event
+    switch (event.type) {
+      case "checkout.session.completed":
+        const session = event.data.object;
+        // Update user subscription in your database
+        console.log("Subscription successful:", session);
+        break;
+      case "invoice.payment_succeeded":
+        // Handle successful payment
+        break;
+      case "customer.subscription.deleted":
+        // Handle subscription cancellation
+        break;
+      default:
+        console.log(`Unhandled event type ${event.type}`);
+    }
+
+    res.json({ received: true });
+  }
+);
+
+// Add a health check endpoint to verify environment variables
+app.get("/api/health", (req, res) => {
+  const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
+  const productionUrl =
+    frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+
+  res.json({
+    status: "ok",
+    env_check: {
+      has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
+      has_frontend_urls: !!process.env.FRONTEND_URLS,
+      frontend_urls: frontendUrls,
+      production_url: productionUrl, // Remove this in production
+    },
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
+  const productionUrl =
+    frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+
+  console.log("Environment check:", {
+    has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
+    has_frontend_urls: !!process.env.FRONTEND_URLS,
+    frontend_urls: frontendUrls,
+    production_url_for_stripe: productionUrl,
+  });
+});
+
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
@@ -822,84 +955,7 @@ Please analyze and identify ONLY the keywords that appear in BOTH the job descri
     });
   }
 });
-// Add this at the top with your other imports
-const stripe = require("stripe")(process.env.VITE_STRIPE_SECRET_KEY);
 
-// Create checkout session endpoint
-app.post("/api/create-checkout-session", async (req, res) => {
-  try {
-    const { priceId, planName, userId, userEmail } = req.body;
-
-    if (!priceId || !planName || !userId) {
-      return res
-        .status(400)
-        .json({ error: "Price ID, plan name, and user ID are required" });
-    }
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      mode: "subscription",
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/pricing`,
-      client_reference_id: userId,
-      customer_email: userEmail,
-      metadata: {
-        planName: planName,
-        userId: userId,
-        firebaseUid: userId,
-      },
-    });
-
-    res.json({ sessionId: session.id, url: session.url });
-  } catch (error) {
-    console.error("Stripe checkout error:", error.message);
-    res.status(500).json({ error: "Failed to create checkout session" });
-  }
-});
-
-// Handle successful subscription (webhook)
-app.post(
-  "/api/webhook",
-  express.raw({ type: "application/json" }),
-  (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-    } catch (err) {
-      console.log(`Webhook signature verification failed.`, err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    // Handle the event
-    switch (event.type) {
-      case "checkout.session.completed":
-        const session = event.data.object;
-        // Update user subscription in your database
-        console.log("Subscription successful:", session);
-        break;
-      case "invoice.payment_succeeded":
-        // Handle successful payment
-        break;
-      case "customer.subscription.deleted":
-        // Handle subscription cancellation
-        break;
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-    }
-
-    res.json({ received: true });
-  }
-);
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
