@@ -140,20 +140,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
-  const productionUrl =
-    frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
-
-  console.log("Environment check:", {
-    has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
-    has_frontend_urls: !!process.env.FRONTEND_URLS,
-    frontend_urls: frontendUrls,
-    production_url_for_stripe: productionUrl,
-  });
-});
-
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
@@ -958,6 +944,16 @@ Please analyze and identify ONLY the keywords that appear in BOTH the job descri
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
+  const productionUrl =
+    frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+
+  console.log("Environment check:", {
+    has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
+    has_frontend_urls: !!process.env.FRONTEND_URLS,
+    frontend_urls: frontendUrls,
+    production_url_for_stripe: productionUrl,
+  });
 });
 
 module.exports = app;
