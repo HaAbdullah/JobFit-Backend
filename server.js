@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 // For comma-separated approach
 const allowedOrigins = process.env.FRONTEND_URLS?.split(",") || [
-  "http://localhost:3000",
+  "http://localhost:8888",
 ];
 
 // For CORS middleware
