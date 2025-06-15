@@ -265,9 +265,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
