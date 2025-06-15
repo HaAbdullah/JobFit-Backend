@@ -83,19 +83,14 @@ app.post("/api/create-checkout-session", async (req, res) => {
         },
       ],
       mode: "subscription",
-
       success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/pricing`,
-
       customer_email: userEmail,
-
       metadata: {
         userId: userId,
         planName: planName,
       },
-
       billing_address_collection: "auto",
-
       subscription_data: {
         trial_period_days: 7,
         metadata: {
@@ -104,12 +99,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
         },
       },
     });
-
-    // Final verification
-    console.log(
-      "Stripe session created with success_url:",
-      session.success_url
-    );
 
     res.json({
       sessionId: session.id,
@@ -264,9 +253,6 @@ app.get("/api/health", (req, res) => {
     },
   });
 });
-// Add this endpoint to your existing backend server.js file
-
-// Verify session endpoint - add this to your server.js
 app.post("/api/verify-session", async (req, res) => {
   try {
     const { sessionId } = req.body;
@@ -275,12 +261,10 @@ app.post("/api/verify-session", async (req, res) => {
       return res.status(400).json({ error: "Session ID is required" });
     }
 
-    // Retrieve the session from Stripe
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["line_items", "customer", "subscription"],
     });
 
-    // Check if payment was successful
     if (session.payment_status !== "paid") {
       return res.status(400).json({
         error: "Payment not completed",
@@ -288,10 +272,8 @@ app.post("/api/verify-session", async (req, res) => {
       });
     }
 
-    // Extract plan information from metadata or line items
     const planName = session.metadata?.planName || "Premium";
 
-    // Return safe session data
     const safeSessionData = {
       id: session.id,
       planName: planName,
@@ -300,6 +282,7 @@ app.post("/api/verify-session", async (req, res) => {
       status: session.status,
       payment_status: session.payment_status,
       customer_email: session.customer_details?.email || session.customer_email,
+      customer_id: session.customer, // ADD THIS - Important for cancellation
       userId: session.metadata?.userId,
       created: session.created,
       subscription_id: session.subscription?.id || session.subscription,
@@ -307,6 +290,8 @@ app.post("/api/verify-session", async (req, res) => {
 
     console.log("Session verified successfully:", {
       sessionId: session.id,
+      customerId: session.customer, // ADD THIS LOG
+      subscriptionId: session.subscription,
       planName: planName,
       userId: session.metadata?.userId,
       payment_status: session.payment_status,
@@ -321,6 +306,125 @@ app.post("/api/verify-session", async (req, res) => {
     });
   }
 });
+
+// 3. UPDATE your cancel subscription endpoint to actually cancel in Stripe
+app.post("/api/cancel-subscription", async (req, res) => {
+  try {
+    const { customerId, subscriptionId } = req.body;
+
+    if (!customerId && !subscriptionId) {
+      return res.status(400).json({
+        error: "Either customerId or subscriptionId is required",
+      });
+    }
+
+    let subscription;
+
+    if (subscriptionId) {
+      // If we have subscription ID, cancel directly
+      subscription = await stripe.subscriptions.cancel(subscriptionId);
+      console.log(`Cancelled subscription ${subscriptionId}`);
+    } else if (customerId) {
+      // If we only have customer ID, find and cancel their active subscriptions
+      const subscriptions = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "active",
+      });
+
+      if (subscriptions.data.length === 0) {
+        return res.status(404).json({
+          error: "No active subscriptions found for this customer",
+        });
+      }
+
+      // Cancel the first active subscription (assuming one subscription per customer)
+      subscription = await stripe.subscriptions.cancel(
+        subscriptions.data[0].id
+      );
+      console.log(
+        `Cancelled subscription ${subscriptions.data[0].id} for customer ${customerId}`
+      );
+    }
+
+    res.json({
+      success: true,
+      message: "Subscription cancelled successfully",
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        canceled_at: subscription.canceled_at,
+      },
+    });
+  } catch (error) {
+    console.error("Error cancelling subscription:", error);
+    res.status(500).json({
+      error: "Failed to cancel subscription",
+      message: error.message,
+    });
+  }
+});
+// --------------- DASHBOARD API END POINTS --------------- //
+// Add this to your existing server.js file
+
+// Cancel subscription endpoint
+app.post("/api/cancel-subscription", async (req, res) => {
+  try {
+    const { customerId, subscriptionId } = req.body;
+
+    if (!customerId && !subscriptionId) {
+      return res.status(400).json({
+        error: "Either customerId or subscriptionId is required",
+      });
+    }
+
+    let subscription;
+
+    if (subscriptionId) {
+      // If we have subscription ID, cancel directly
+      subscription = await stripe.subscriptions.cancel(subscriptionId);
+      console.log(`Cancelled subscription ${subscriptionId}`);
+    } else if (customerId) {
+      // If we only have customer ID, find and cancel their active subscriptions
+      const subscriptions = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "active",
+      });
+
+      if (subscriptions.data.length === 0) {
+        return res.status(404).json({
+          error: "No active subscriptions found for this customer",
+        });
+      }
+
+      // Cancel the first active subscription (assuming one subscription per customer)
+      subscription = await stripe.subscriptions.cancel(
+        subscriptions.data[0].id
+      );
+      console.log(
+        `Cancelled subscription ${subscriptions.data[0].id} for customer ${customerId}`
+      );
+    }
+
+    res.json({
+      success: true,
+      message: "Subscription cancelled successfully",
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        canceled_at: subscription.canceled_at,
+      },
+    });
+  } catch (error) {
+    console.error("Error cancelling subscription:", error);
+    res.status(500).json({
+      error: "Failed to cancel subscription",
+      message: error.message,
+    });
+  }
+});
+
+//---------------- RESUME AND COVER LETTER GENERATION END POINTS --------------- //
+
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
