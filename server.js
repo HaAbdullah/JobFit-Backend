@@ -25,19 +25,13 @@ app.use(
 
 // Fix: Use STRIPE_SECRET_KEY instead of VITE_STRIPE_SECRET_KEY
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-// Fix the FRONTEND_URLS environment variable (remove trailing slash)
-// FRONTEND_URLS=http://localhost:8888,https://jobfitresume.netlify.app
 
-// Updated create-checkout-session endpoint with better URL handling
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId, planName, userId, userEmail } = req.body;
 
-    // Get frontend URLs and clean them
-    const frontendUrls = process.env.FRONTEND_URLS.split(",").map((url) =>
-      url.trim().replace(/\/$/, "")
-    );
-
+    // Get frontend URLs
+    const frontendUrls = process.env.FRONTEND_URLS.split(",");
     const localhostUrl = frontendUrls.find(
       (url) => url.includes("localhost") || url.includes("127.0.0.1")
     );
@@ -61,6 +55,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
       frontendUrl = productionUrl || frontendUrls[0];
     }
 
+    // Remove trailing slash if present
+    frontendUrl = frontendUrl.replace(/\/$/, "");
+
     // Comprehensive logging
     console.log("=== DEBUGGING URL SELECTION ===");
     console.log("Request host:", req.get("host"));
@@ -75,7 +72,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
     console.log("Production URL:", productionUrl);
     console.log("Selected frontend URL:", frontendUrl);
     console.log("Final success URL:", `${frontendUrl}/success`);
-    console.log("Final cancel URL:", `${frontendUrl}/pricing`);
     console.log("================================");
 
     const session = await stripe.checkout.sessions.create({
@@ -87,14 +83,19 @@ app.post("/api/create-checkout-session", async (req, res) => {
         },
       ],
       mode: "subscription",
+
       success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/pricing`,
+
       customer_email: userEmail,
+
       metadata: {
         userId: userId,
         planName: planName,
       },
+
       billing_address_collection: "auto",
+
       subscription_data: {
         trial_period_days: 7,
         metadata: {
@@ -109,7 +110,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
       "Stripe session created with success_url:",
       session.success_url
     );
-    console.log("Stripe session created with cancel_url:", session.cancel_url);
 
     res.json({
       sessionId: session.id,
@@ -120,6 +120,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // Optional: Add webhook endpoint to handle successful payments
 app.post(
   "/api/stripe-webhook",
