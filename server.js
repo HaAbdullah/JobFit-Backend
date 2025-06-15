@@ -103,12 +103,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
           planName: planName,
         },
       },
-      customer_creation: "always",
-      payment_intent_data: {
-        metadata: {
-          userId: userId,
-        },
-      },
     });
 
     // Final verification
@@ -270,7 +264,9 @@ app.get("/api/health", (req, res) => {
     },
   });
 });
+// Add this endpoint to your existing backend server.js file
 
+// Verify session endpoint - add this to your server.js
 app.post("/api/verify-session", async (req, res) => {
   try {
     const { sessionId } = req.body;
@@ -325,143 +321,6 @@ app.post("/api/verify-session", async (req, res) => {
     });
   }
 });
-
-//-- Dashboard
-
-// Get subscription status
-app.post("/api/subscription-status", async (req, res) => {
-  try {
-    const { userId } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ error: "User ID is required" });
-    }
-
-    // You might want to store subscription IDs in your database
-    // For now, we'll try to find it through customer data
-
-    // First, try to get customer by metadata (if you stored userId in customer metadata)
-    const customers = await stripe.customers.list({
-      limit: 100,
-    });
-
-    let customer = null;
-    for (const cust of customers.data) {
-      if (cust.metadata && cust.metadata.userId === userId) {
-        customer = cust;
-        break;
-      }
-    }
-
-    if (!customer) {
-      return res.json({
-        status: "no_subscription",
-        message: "No subscription found",
-      });
-    }
-
-    // Get subscriptions for this customer
-    const subscriptions = await stripe.subscriptions.list({
-      customer: customer.id,
-      limit: 10,
-    });
-
-    if (subscriptions.data.length === 0) {
-      return res.json({
-        status: "no_subscription",
-        message: "No active subscription found",
-      });
-    }
-
-    const subscription = subscriptions.data[0]; // Get the most recent subscription
-
-    res.json({
-      subscription_id: subscription.id,
-      status: subscription.status,
-      current_period_start: subscription.current_period_start,
-      current_period_end: subscription.current_period_end,
-      next_billing_date: subscription.current_period_end,
-      customer_id: customer.id,
-      plan_name: subscription.metadata?.planName || "Premium",
-      amount: subscription.items.data[0]?.price?.unit_amount || 0,
-      currency: subscription.items.data[0]?.price?.currency || "usd",
-    });
-  } catch (error) {
-    console.error("Error fetching subscription status:", error);
-    res.status(500).json({
-      error: "Failed to fetch subscription status",
-      message: error.message,
-    });
-  }
-});
-
-// Cancel subscription
-app.post("/api/cancel-subscription", async (req, res) => {
-  try {
-    const { subscriptionId, userId } = req.body;
-
-    if (!subscriptionId) {
-      return res.status(400).json({ error: "Subscription ID is required" });
-    }
-
-    // Cancel the subscription at period end (so user keeps access until billing period ends)
-    const subscription = await stripe.subscriptions.update(subscriptionId, {
-      cancel_at_period_end: true,
-    });
-
-    console.log(`Subscription ${subscriptionId} cancelled for user ${userId}`);
-
-    res.json({
-      success: true,
-      subscription: {
-        id: subscription.id,
-        status: subscription.status,
-        cancel_at_period_end: subscription.cancel_at_period_end,
-        current_period_end: subscription.current_period_end,
-      },
-      message:
-        "Subscription will be cancelled at the end of the current billing period",
-    });
-  } catch (error) {
-    console.error("Error cancelling subscription:", error);
-    res.status(500).json({
-      error: "Failed to cancel subscription",
-      message: error.message,
-    });
-  }
-});
-
-// Reactivate subscription (if cancelled but still in billing period)
-app.post("/api/reactivate-subscription", async (req, res) => {
-  try {
-    const { subscriptionId } = req.body;
-
-    if (!subscriptionId) {
-      return res.status(400).json({ error: "Subscription ID is required" });
-    }
-
-    const subscription = await stripe.subscriptions.update(subscriptionId, {
-      cancel_at_period_end: false,
-    });
-
-    res.json({
-      success: true,
-      subscription: {
-        id: subscription.id,
-        status: subscription.status,
-        cancel_at_period_end: subscription.cancel_at_period_end,
-      },
-      message: "Subscription reactivated successfully",
-    });
-  } catch (error) {
-    console.error("Error reactivating subscription:", error);
-    res.status(500).json({
-      error: "Failed to reactivate subscription",
-      message: error.message,
-    });
-  }
-});
-
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
