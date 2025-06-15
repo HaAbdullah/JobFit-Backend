@@ -129,7 +129,43 @@ app.post(
     res.json({ received: true });
   }
 );
+// Add this endpoint to your backend server
+// This allows the success page to fetch session details
 
+app.get("/api/checkout-session/:sessionId", async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    // Retrieve the session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["line_items", "customer"],
+    });
+
+    // Only return safe data to the frontend
+    const safeSessionData = {
+      id: session.id,
+      amount_total: session.amount_total,
+      currency: session.currency,
+      status: session.status,
+      payment_status: session.payment_status,
+      customer_details: session.customer_details,
+      metadata: session.metadata,
+      created: session.created,
+      line_items: session.line_items
+        ? session.line_items.data.map((item) => ({
+            description: item.description,
+            quantity: item.quantity,
+            amount_total: item.amount_total,
+          }))
+        : [],
+    };
+
+    res.json(safeSessionData);
+  } catch (error) {
+    console.error("Error retrieving session:", error);
+    res.status(500).json({ error: "Failed to retrieve session details" });
+  }
+});
 // Handle successful subscription (webhook)
 app.post(
   "/api/webhook",
