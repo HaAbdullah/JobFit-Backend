@@ -264,7 +264,63 @@ app.get("/api/health", (req, res) => {
     },
   });
 });
+// Add this endpoint to your existing backend server.js file
 
+// Verify session endpoint - add this to your server.js
+app.post("/api/verify-session", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID is required" });
+    }
+
+    // Retrieve the session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["line_items", "customer", "subscription"],
+    });
+
+    // Check if payment was successful
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({
+        error: "Payment not completed",
+        payment_status: session.payment_status,
+      });
+    }
+
+    // Extract plan information from metadata or line items
+    const planName = session.metadata?.planName || "Premium";
+
+    // Return safe session data
+    const safeSessionData = {
+      id: session.id,
+      planName: planName,
+      amount_total: session.amount_total,
+      currency: session.currency,
+      status: session.status,
+      payment_status: session.payment_status,
+      customer_email: session.customer_details?.email || session.customer_email,
+      userId: session.metadata?.userId,
+      created: session.created,
+      subscription_id: session.subscription?.id || session.subscription,
+    };
+
+    console.log("Session verified successfully:", {
+      sessionId: session.id,
+      planName: planName,
+      userId: session.metadata?.userId,
+      payment_status: session.payment_status,
+    });
+
+    res.json(safeSessionData);
+  } catch (error) {
+    console.error("Error verifying session:", error);
+    res.status(500).json({
+      error: "Failed to verify session",
+      message: error.message,
+    });
+  }
+});
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
