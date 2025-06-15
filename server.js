@@ -25,25 +25,34 @@ app.use(
 
 // Fix: Use STRIPE_SECRET_KEY instead of VITE_STRIPE_SECRET_KEY
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId, planName, userId, userEmail } = req.body;
 
-    // Explicit URL determination - much more reliable
+    // Get frontend URLs
     const frontendUrls = process.env.FRONTEND_URLS.split(",");
+    const localhostUrl = frontendUrls.find(
+      (url) => url.includes("localhost") || url.includes("127.0.0.1")
+    );
+    const productionUrl = frontendUrls.find((url) => url.includes("https://"));
 
-    // Check if we're running on localhost (development)
+    // Better localhost detection
     const isLocalhost =
+      process.env.NODE_ENV === "development" ||
+      process.env.PORT === "3000" ||
+      process.env.PORT === 3000 ||
       req.get("host")?.includes("localhost") ||
       req.get("host")?.includes("127.0.0.1") ||
-      process.env.PORT === "3000" ||
-      process.env.NODE_ENV === "development";
+      req.headers.origin?.includes("localhost") ||
+      req.headers.referer?.includes("localhost");
 
+    // Select the appropriate frontend URL
     let frontendUrl;
-    if (isLocalhost) {
-      frontendUrl = frontendUrls[0]; // localhost
+    if (isLocalhost && localhostUrl) {
+      frontendUrl = localhostUrl;
     } else {
-      frontendUrl = frontendUrls[1]; // production
+      frontendUrl = productionUrl || frontendUrls[0];
     }
 
     // Remove trailing slash if present
@@ -52,11 +61,15 @@ app.post("/api/create-checkout-session", async (req, res) => {
     // Comprehensive logging
     console.log("=== DEBUGGING URL SELECTION ===");
     console.log("Request host:", req.get("host"));
+    console.log("Request origin:", req.headers.origin);
+    console.log("Request referer:", req.headers.referer);
     console.log("NODE_ENV:", process.env.NODE_ENV);
-    console.log("PORT:", process.env.PORT);
+    console.log("PORT:", process.env.PORT, "Type:", typeof process.env.PORT);
     console.log("isLocalhost:", isLocalhost);
     console.log("FRONTEND_URLS:", process.env.FRONTEND_URLS);
     console.log("Frontend URLs array:", frontendUrls);
+    console.log("Localhost URL:", localhostUrl);
+    console.log("Production URL:", productionUrl);
     console.log("Selected frontend URL:", frontendUrl);
     console.log("Final success URL:", `${frontendUrl}/success`);
     console.log("================================");
@@ -107,6 +120,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // Optional: Add webhook endpoint to handle successful payments
 app.post(
   "/api/stripe-webhook",
@@ -153,9 +167,9 @@ app.post(
     res.json({ received: true });
   }
 );
+
 // Add this endpoint to your backend server
 // This allows the success page to fetch session details
-
 app.get("/api/checkout-session/:sessionId", async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -190,6 +204,7 @@ app.get("/api/checkout-session/:sessionId", async (req, res) => {
     res.status(500).json({ error: "Failed to retrieve session details" });
   }
 });
+
 // Handle successful subscription (webhook)
 app.post(
   "/api/webhook",
@@ -231,8 +246,10 @@ app.post(
 // Add a health check endpoint to verify environment variables
 app.get("/api/health", (req, res) => {
   const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
-  const productionUrl =
-    frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+  const localhostUrl = frontendUrls.find(
+    (url) => url.includes("localhost") || url.includes("127.0.0.1")
+  );
+  const productionUrl = frontendUrls.find((url) => url.includes("https://"));
 
   res.json({
     status: "ok",
@@ -240,11 +257,17 @@ app.get("/api/health", (req, res) => {
       has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
       has_frontend_urls: !!process.env.FRONTEND_URLS,
       frontend_urls: frontendUrls,
-      production_url: productionUrl, // Remove this in production
+      localhost_url: localhostUrl,
+      production_url: productionUrl,
+      node_env: process.env.NODE_ENV,
+      port: process.env.PORT,
     },
   });
 });
 
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 // Load instruction files
 const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
 const coverLetterSystemPrompt = fs.readFileSync(
