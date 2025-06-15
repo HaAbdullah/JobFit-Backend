@@ -27,14 +27,37 @@ app.use(
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // Create checkout session endpoint
-// Example backend endpoint for creating checkout session
-// This would be in your backend server (e.g., Express.js)
-
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId, planName, userId, userEmail } = req.body;
 
-    // Create Stripe checkout session
+    if (!priceId || !planName || !userId) {
+      return res
+        .status(400)
+        .json({ error: "Price ID, plan name, and user ID are required" });
+    }
+
+    // Get frontend URL from FRONTEND_URLS (use production URL for Stripe)
+    const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
+    if (frontendUrls.length === 0) {
+      console.error("FRONTEND_URLS environment variable is not set");
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    // Use production URL (the one with https) for Stripe checkout, fallback to first URL
+    const baseUrl =
+      frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+
+    if (!baseUrl) {
+      console.error("No valid frontend URL found in FRONTEND_URLS");
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    console.log("Creating checkout session with URLs:", {
+      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/pricing`,
+    });
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       line_items: [
@@ -44,54 +67,21 @@ app.post("/api/create-checkout-session", async (req, res) => {
         },
       ],
       mode: "subscription",
+      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${baseUrl}/pricing`,
+      client_reference_id: userId,
       customer_email: userEmail,
-
-      // These URLs are crucial - they must match your frontend routes
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/pricing`,
-
-      // Optional: Add metadata for tracking
       metadata: {
-        userId: userId,
         planName: planName,
+        userId: userId,
+        firebaseUid: userId,
       },
-
-      // Optional: Customize the checkout experience
-      allow_promotion_codes: true,
-      billing_address_collection: "required",
     });
 
-    res.json({
-      sessionId: session.id,
-      url: session.url,
-    });
+    res.json({ sessionId: session.id, url: session.url });
   } catch (error) {
-    console.error("Error creating checkout session:", error);
+    console.error("Stripe checkout error:", error.message);
     res.status(500).json({ error: "Failed to create checkout session" });
-  }
-});
-
-// Optional: Add session verification endpoint
-app.post("/api/verify-session", async (req, res) => {
-  try {
-    const { sessionId } = req.body;
-
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    if (session.payment_status === "paid") {
-      res.json({
-        success: true,
-        planName: session.metadata?.planName,
-        customerEmail: session.customer_email,
-        amountTotal: session.amount_total,
-        currency: session.currency,
-      });
-    } else {
-      res.json({ success: false });
-    }
-  } catch (error) {
-    console.error("Error verifying session:", error);
-    res.status(500).json({ error: "Failed to verify session" });
   }
 });
 
