@@ -25,38 +25,17 @@ app.use(
 
 // Fix: Use STRIPE_SECRET_KEY instead of VITE_STRIPE_SECRET_KEY
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+// Backend API endpoint to create checkout session
+// This should be in your backend server (Node.js/Express example)
 
-// Create checkout session endpoint
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId, planName, userId, userEmail } = req.body;
 
-    if (!priceId || !planName || !userId) {
-      return res
-        .status(400)
-        .json({ error: "Price ID, plan name, and user ID are required" });
-    }
-
-    // Get frontend URL from FRONTEND_URLS (use production URL for Stripe)
-    const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
-    if (frontendUrls.length === 0) {
-      console.error("FRONTEND_URLS environment variable is not set");
-      return res.status(500).json({ error: "Server configuration error" });
-    }
-
-    // Use production URL (the one with https) for Stripe checkout, fallback to first URL
-    const baseUrl =
-      frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
-
-    if (!baseUrl) {
-      console.error("No valid frontend URL found in FRONTEND_URLS");
-      return res.status(500).json({ error: "Server configuration error" });
-    }
-
-    console.log("Creating checkout session with URLs:", {
-      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/pricing`,
-    });
+    // Determine the correct frontend URL based on environment
+    const frontendUrls = process.env.FRONTEND_URLS.split(",");
+    const isDev = process.env.NODE_ENV === "development";
+    const frontendUrl = isDev ? frontendUrls[0] : frontendUrls[1]; // localhost for dev, netlify for prod
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -66,24 +45,90 @@ app.post("/api/create-checkout-session", async (req, res) => {
           quantity: 1,
         },
       ],
-      mode: "subscription",
-      success_url: `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/pricing`,
-      client_reference_id: userId,
+      mode: "subscription", // or 'payment' if it's a one-time payment
+
+      // CRITICAL: Add these success and cancel URLs
+      success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/pricing`,
+
+      // Optional: Add customer info
       customer_email: userEmail,
+
+      // Optional: Add metadata
       metadata: {
-        planName: planName,
         userId: userId,
-        firebaseUid: userId,
+        planName: planName,
+      },
+
+      // Optional: Customize the checkout experience
+      billing_address_collection: "auto",
+
+      // For subscriptions, you might want to add trial period settings
+      subscription_data: {
+        trial_period_days: 7, // 7-day free trial as mentioned in your FAQ
+        metadata: {
+          userId: userId,
+          planName: planName,
+        },
       },
     });
 
-    res.json({ sessionId: session.id, url: session.url });
+    res.json({
+      sessionId: session.id,
+      url: session.url,
+    });
   } catch (error) {
-    console.error("Stripe checkout error:", error.message);
-    res.status(500).json({ error: "Failed to create checkout session" });
+    console.error("Error creating checkout session:", error);
+    res.status(500).json({ error: error.message });
   }
 });
+
+// Optional: Add webhook endpoint to handle successful payments
+app.post(
+  "/api/stripe-webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.log(`Webhook signature verification failed.`, err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the event
+    switch (event.type) {
+      case "checkout.session.completed":
+        const session = event.data.object;
+        console.log("Payment succeeded:", session);
+
+        // Update user's subscription status in your database
+        // updateUserSubscription(session.metadata.userId, session.metadata.planName);
+        break;
+
+      case "invoice.payment_succeeded":
+        // Handle successful recurring payments
+        console.log("Recurring payment succeeded");
+        break;
+
+      case "customer.subscription.deleted":
+        // Handle subscription cancellation
+        console.log("Subscription cancelled");
+        break;
+
+      default:
+        console.log(`Unhandled event type ${event.type}`);
+    }
+
+    res.json({ received: true });
+  }
+);
 
 // Handle successful subscription (webhook)
 app.post(
