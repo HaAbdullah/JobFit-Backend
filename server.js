@@ -27,15 +27,22 @@ app.use(
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 // Backend API endpoint to create checkout session
 // This should be in your backend server (Node.js/Express example)
-
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId, planName, userId, userEmail } = req.body;
 
-    // Determine the correct frontend URL based on environment
+    // More robust URL determination
     const frontendUrls = process.env.FRONTEND_URLS.split(",");
     const isDev = process.env.NODE_ENV === "development";
-    const frontendUrl = isDev ? frontendUrls[0] : frontendUrls[1]; // localhost for dev, netlify for prod
+    let frontendUrl = isDev ? frontendUrls[0] : frontendUrls[1];
+
+    // Remove trailing slash if present
+    frontendUrl = frontendUrl.replace(/\/$/, "");
+
+    // Log for debugging
+    console.log("Environment:", process.env.NODE_ENV);
+    console.log("Frontend URL being used:", frontendUrl);
+    console.log("Success URL will be:", `${frontendUrl}/success`);
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -45,33 +52,32 @@ app.post("/api/create-checkout-session", async (req, res) => {
           quantity: 1,
         },
       ],
-      mode: "subscription", // or 'payment' if it's a one-time payment
+      mode: "subscription",
 
-      // CRITICAL: Add these success and cancel URLs
+      // Make sure these URLs are correct
       success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/pricing`,
 
-      // Optional: Add customer info
       customer_email: userEmail,
 
-      // Optional: Add metadata
       metadata: {
         userId: userId,
         planName: planName,
       },
 
-      // Optional: Customize the checkout experience
       billing_address_collection: "auto",
 
-      // For subscriptions, you might want to add trial period settings
       subscription_data: {
-        trial_period_days: 7, // 7-day free trial as mentioned in your FAQ
+        trial_period_days: 7,
         metadata: {
           userId: userId,
           planName: planName,
         },
       },
     });
+
+    // Log the created session for debugging
+    console.log("Created session with success_url:", session.success_url);
 
     res.json({
       sessionId: session.id,
@@ -82,7 +88,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 // Optional: Add webhook endpoint to handle successful payments
 app.post(
   "/api/stripe-webhook",
