@@ -25,24 +25,41 @@ app.use(
 
 // Fix: Use STRIPE_SECRET_KEY instead of VITE_STRIPE_SECRET_KEY
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-// Backend API endpoint to create checkout session
-// This should be in your backend server (Node.js/Express example)
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId, planName, userId, userEmail } = req.body;
 
-    // More robust URL determination
+    // Explicit URL determination - much more reliable
     const frontendUrls = process.env.FRONTEND_URLS.split(",");
-    const isDev = process.env.NODE_ENV === "development";
-    let frontendUrl = isDev ? frontendUrls[0] : frontendUrls[1];
+
+    // Check if we're running on localhost (development)
+    const isLocalhost =
+      req.get("host")?.includes("localhost") ||
+      req.get("host")?.includes("127.0.0.1") ||
+      process.env.PORT === "3000" ||
+      process.env.NODE_ENV === "development";
+
+    let frontendUrl;
+    if (isLocalhost) {
+      frontendUrl = frontendUrls[0]; // localhost
+    } else {
+      frontendUrl = frontendUrls[1]; // production
+    }
 
     // Remove trailing slash if present
     frontendUrl = frontendUrl.replace(/\/$/, "");
 
-    // Log for debugging
-    console.log("Environment:", process.env.NODE_ENV);
-    console.log("Frontend URL being used:", frontendUrl);
-    console.log("Success URL will be:", `${frontendUrl}/success`);
+    // Comprehensive logging
+    console.log("=== DEBUGGING URL SELECTION ===");
+    console.log("Request host:", req.get("host"));
+    console.log("NODE_ENV:", process.env.NODE_ENV);
+    console.log("PORT:", process.env.PORT);
+    console.log("isLocalhost:", isLocalhost);
+    console.log("FRONTEND_URLS:", process.env.FRONTEND_URLS);
+    console.log("Frontend URLs array:", frontendUrls);
+    console.log("Selected frontend URL:", frontendUrl);
+    console.log("Final success URL:", `${frontendUrl}/success`);
+    console.log("================================");
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -54,7 +71,6 @@ app.post("/api/create-checkout-session", async (req, res) => {
       ],
       mode: "subscription",
 
-      // Make sure these URLs are correct
       success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/pricing`,
 
@@ -76,8 +92,11 @@ app.post("/api/create-checkout-session", async (req, res) => {
       },
     });
 
-    // Log the created session for debugging
-    console.log("Created session with success_url:", session.success_url);
+    // Final verification
+    console.log(
+      "Stripe session created with success_url:",
+      session.success_url
+    );
 
     res.json({
       sessionId: session.id,
