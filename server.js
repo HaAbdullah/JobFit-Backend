@@ -2,20 +2,116 @@ const fs = require("fs");
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const { body, param, validationResult } = require("express-validator");
+const winston = require("winston");
 require("dotenv").config();
 
+// Initialize Express app first
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json());
+// Initialize Winston Logger
+const logger = winston.createLogger({
+  level: process.env.NODE_ENV === "production" ? "info" : "debug",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ filename: "error.log", level: "error" }),
+    new winston.transports.File({ filename: "combined.log" }),
+  ],
+});
 
-// For comma-separated approach
+if (process.env.NODE_ENV !== "production") {
+  logger.add(
+    new winston.transports.Console({
+      format: winston.format.simple(),
+    })
+  );
+}
+
+// Initialize Firebase Admin
+const admin = require("firebase-admin");
+
+try {
+  let serviceAccount;
+
+  // Try to load from environment variable first
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+  } else if (fs.existsSync("./firebase-service-account.json")) {
+    // Fallback to service account file
+    serviceAccount = require("./firebase-service-account.json");
+  } else {
+    throw new Error(
+      "Firebase service account key not found. Please set FIREBASE_SERVICE_ACCOUNT_KEY environment variable or create firebase-service-account.json file"
+    );
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+  logger.info("Firebase Admin initialized successfully");
+} catch (error) {
+  logger.error("Failed to initialize Firebase Admin:", error);
+  console.error("Firebase initialization error:", error.message);
+  console.error("Please check your Firebase service account configuration");
+  process.exit(1);
+}
+const db = admin.firestore();
+
+// Initialize Stripe
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+// Security Middleware
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+      },
+    },
+  })
+);
+
+// Force HTTPS in production
+if (process.env.NODE_ENV === "production") {
+  app.use((req, res, next) => {
+    if (req.header("x-forwarded-proto") !== "https") {
+      res.redirect(`https://${req.header("host")}${req.url}`);
+    } else {
+      next();
+    }
+  });
+}
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  message: "Too many requests from this IP, please try again later.",
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use("/api/", limiter);
+
+// Body parsing middleware (webhook needs raw body)
+app.use("/api/stripe-webhook", express.raw({ type: "application/json" }));
+app.use(express.json({ limit: "10mb" }));
+
+// CORS configuration
 const allowedOrigins = process.env.FRONTEND_URLS?.split(",") || [
   "http://localhost:8888",
 ];
 
-// For CORS middleware
 app.use(
   cors({
     origin: allowedOrigins,
@@ -23,416 +119,566 @@ app.use(
   })
 );
 
-// Fix: Use STRIPE_SECRET_KEY instead of VITE_STRIPE_SECRET_KEY
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
-app.post("/api/create-checkout-session", async (req, res) => {
+// Firebase Auth verification middleware
+const verifyFirebaseToken = async (req, res, next) => {
   try {
-    const { priceId, planName, userId, userEmail } = req.body;
-
-    // Get frontend URLs
-    const frontendUrls = process.env.FRONTEND_URLS.split(",");
-    const localhostUrl = frontendUrls.find(
-      (url) => url.includes("localhost") || url.includes("127.0.0.1")
-    );
-    const productionUrl = frontendUrls.find((url) => url.includes("https://"));
-
-    // Better localhost detection
-    const isLocalhost =
-      process.env.NODE_ENV === "development" ||
-      process.env.PORT === "3000" ||
-      process.env.PORT === 3000 ||
-      req.get("host")?.includes("localhost") ||
-      req.get("host")?.includes("127.0.0.1") ||
-      req.headers.origin?.includes("localhost") ||
-      req.headers.referer?.includes("localhost");
-
-    // Select the appropriate frontend URL
-    let frontendUrl;
-    if (isLocalhost && localhostUrl) {
-      frontendUrl = localhostUrl;
-    } else {
-      frontendUrl = productionUrl || frontendUrls[0];
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized: No token provided" });
     }
 
-    // Remove trailing slash if present
-    frontendUrl = frontendUrl.replace(/\/$/, "");
+    const token = authHeader.split("Bearer ")[1];
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    logger.error("Error verifying Firebase token:", error);
+    return res.status(401).json({ error: "Unauthorized: Invalid token" });
+  }
+};
 
-    // Comprehensive logging
-    console.log("=== DEBUGGING URL SELECTION ===");
-    console.log("Request host:", req.get("host"));
-    console.log("Request origin:", req.headers.origin);
-    console.log("Request referer:", req.headers.referer);
-    console.log("NODE_ENV:", process.env.NODE_ENV);
-    console.log("PORT:", process.env.PORT, "Type:", typeof process.env.PORT);
-    console.log("isLocalhost:", isLocalhost);
-    console.log("FRONTEND_URLS:", process.env.FRONTEND_URLS);
-    console.log("Frontend URLs array:", frontendUrls);
-    console.log("Localhost URL:", localhostUrl);
-    console.log("Production URL:", productionUrl);
-    console.log("Selected frontend URL:", frontendUrl);
-    console.log("Final success URL:", `${frontendUrl}/success`);
-    console.log("================================");
+// Validation middleware
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+  next();
+};
 
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      mode: "subscription",
-      success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/pricing`,
-      customer_email: userEmail,
-      metadata: {
-        userId: userId,
-        planName: planName,
-      },
-      billing_address_collection: "auto",
-      subscription_data: {
-        trial_period_days: 7,
+// Helper functions
+async function getUserDocument(userId) {
+  try {
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      const userData = {
+        userId,
+        tier: "FREEMIUM",
+        usageCount: 0,
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+        subscriptionStatus: "inactive",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await userRef.set(userData);
+      logger.info(`Created new user document for ${userId}`);
+      return userData;
+    }
+
+    return userDoc.data();
+  } catch (error) {
+    logger.error("Error getting user document:", error);
+    throw error;
+  }
+}
+
+async function updateUserDocument(userId, updates) {
+  try {
+    const userRef = db.collection("users").doc(userId);
+    await userRef.update({
+      ...updates,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    logger.info(`Updated user document for ${userId}:`, updates);
+  } catch (error) {
+    logger.error("Error updating user document:", error);
+    throw error;
+  }
+}
+
+// Load instruction files for AI endpoints
+let resumeSystemPrompt, coverLetterSystemPrompt;
+try {
+  resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
+  coverLetterSystemPrompt = fs.readFileSync(
+    "./Cover-Letter-Instructions.txt",
+    "utf8"
+  );
+} catch (error) {
+  logger.warn("Could not load instruction files:", error.message);
+  resumeSystemPrompt =
+    "You are a professional resume writer. Create a well-formatted resume based on the job description.";
+  coverLetterSystemPrompt =
+    "You are a professional cover letter writer. Create a compelling cover letter based on the job description.";
+}
+
+// ============ HEALTH CHECK ENDPOINTS ============
+app.get("/", (req, res) => {
+  res.json({ message: "Job Fit API is running", status: "ok" });
+});
+
+app.get("/api/health", async (req, res) => {
+  const healthCheck = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    version: process.env.npm_package_version || "1.0.0",
+    environment: process.env.NODE_ENV,
+  };
+
+  try {
+    // Test database connection
+    await db.collection("users").limit(1).get();
+    healthCheck.database = "connected";
+
+    // Test Stripe connection
+    await stripe.products.list({ limit: 1 });
+    healthCheck.stripe = "connected";
+
+    res.status(200).json(healthCheck);
+  } catch (error) {
+    healthCheck.status = "error";
+    healthCheck.error = error.message;
+    logger.error("Health check failed:", error);
+    res.status(503).json(healthCheck);
+  }
+});
+
+// ============ USER MANAGEMENT ENDPOINTS ============
+app.get(
+  "/api/user/:userId",
+  [
+    param("userId").isString().trim().escape(),
+    handleValidationErrors,
+    verifyFirebaseToken,
+  ],
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      if (req.user.uid !== userId) {
+        return res
+          .status(403)
+          .json({ error: "Forbidden: Cannot access other user data" });
+      }
+
+      const userData = await getUserDocument(userId);
+
+      res.json({
+        success: true,
+        data: userData,
+      });
+    } catch (error) {
+      logger.error("Error fetching user data:", error);
+      res.status(500).json({
+        error: "Failed to fetch user data",
+        message: error.message,
+      });
+    }
+  }
+);
+
+app.post(
+  "/api/user/:userId/increment-usage",
+  [
+    param("userId").isString().trim().escape(),
+    handleValidationErrors,
+    verifyFirebaseToken,
+  ],
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      if (req.user.uid !== userId) {
+        return res
+          .status(403)
+          .json({ error: "Forbidden: Cannot modify other user data" });
+      }
+
+      const userData = await getUserDocument(userId);
+
+      const TIERS = {
+        FREEMIUM: { name: "Freemium", limit: 2 },
+        BASIC: { name: "Basic", limit: 5 },
+        PREMIUM: { name: "Premium", limit: 10 },
+        PREMIUM_PLUS: { name: "Premium+", limit: -1 },
+      };
+
+      const tier = TIERS[userData.tier];
+      const canGenerate = tier.limit === -1 || userData.usageCount < tier.limit;
+
+      if (!canGenerate) {
+        return res.status(403).json({
+          error: "Usage limit exceeded",
+          usageCount: userData.usageCount,
+          limit: tier.limit,
+          tier: userData.tier,
+        });
+      }
+
+      const newUsageCount = userData.usageCount + 1;
+      await updateUserDocument(userId, { usageCount: newUsageCount });
+
+      res.json({
+        success: true,
+        usageCount: newUsageCount,
+        tier: userData.tier,
+        canGenerate: tier.limit === -1 || newUsageCount < tier.limit,
+      });
+    } catch (error) {
+      logger.error("Error incrementing usage:", error);
+      res.status(500).json({
+        error: "Failed to increment usage",
+        message: error.message,
+      });
+    }
+  }
+);
+
+app.post(
+  "/api/user/:userId/reset-usage",
+  [
+    param("userId").isString().trim().escape(),
+    handleValidationErrors,
+    verifyFirebaseToken,
+  ],
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      if (req.user.uid !== userId) {
+        return res
+          .status(403)
+          .json({ error: "Forbidden: Cannot modify other user data" });
+      }
+
+      await updateUserDocument(userId, { usageCount: 0 });
+
+      res.json({
+        success: true,
+        message: "Usage count reset successfully",
+      });
+    } catch (error) {
+      logger.error("Error resetting usage:", error);
+      res.status(500).json({
+        error: "Failed to reset usage",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// ============ STRIPE ENDPOINTS ============
+app.post(
+  "/api/create-checkout-session",
+  [
+    body("priceId").isString().trim(),
+    body("planName").isString().trim().escape(),
+    body("userId").isString().trim().escape(),
+    body("userEmail").isEmail().normalizeEmail(),
+    handleValidationErrors,
+  ],
+  async (req, res) => {
+    try {
+      const { priceId, planName, userId, userEmail } = req.body;
+
+      const frontendUrls = process.env.FRONTEND_URLS.split(",");
+      const productionUrl = frontendUrls.find((url) =>
+        url.includes("https://")
+      );
+      const frontendUrl = (productionUrl || frontendUrls[0]).replace(/\/$/, "");
+
+      logger.info("Creating checkout session:", {
+        userId,
+        planName,
+        userEmail,
+      });
+
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price: priceId,
+            quantity: 1,
+          },
+        ],
+        mode: "subscription",
+        success_url: `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${frontendUrl}/pricing`,
+        customer_email: userEmail,
         metadata: {
           userId: userId,
           planName: planName,
         },
-      },
-    });
+        billing_address_collection: "auto",
+        subscription_data: {
+          trial_period_days: 7,
+          metadata: {
+            userId: userId,
+            planName: planName,
+          },
+        },
+      });
 
-    res.json({
-      sessionId: session.id,
-      url: session.url,
-    });
-  } catch (error) {
-    console.error("Error creating checkout session:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Optional: Add webhook endpoint to handle successful payments
-app.post(
-  "/api/stripe-webhook",
-  express.raw({ type: "application/json" }),
-  (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      console.log(`Webhook signature verification failed.`, err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+      res.json({
+        sessionId: session.id,
+        url: session.url,
+      });
+    } catch (error) {
+      logger.error("Error creating checkout session:", error);
+      res.status(500).json({ error: error.message });
     }
-
-    // Handle the event
-    switch (event.type) {
-      case "checkout.session.completed":
-        const session = event.data.object;
-        console.log("Payment succeeded:", session);
-
-        // Update user's subscription status in your database
-        // updateUserSubscription(session.metadata.userId, session.metadata.planName);
-        break;
-
-      case "invoice.payment_succeeded":
-        // Handle successful recurring payments
-        console.log("Recurring payment succeeded");
-        break;
-
-      case "customer.subscription.deleted":
-        // Handle subscription cancellation
-        console.log("Subscription cancelled");
-        break;
-
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-    }
-
-    res.json({ received: true });
   }
 );
 
-// Add this endpoint to your backend server
-// This allows the success page to fetch session details
-app.get("/api/checkout-session/:sessionId", async (req, res) => {
+app.post("/api/stripe-webhook", async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  let event;
+
   try {
-    const { sessionId } = req.params;
-
-    // Retrieve the session from Stripe
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["line_items", "customer"],
-    });
-
-    // Only return safe data to the frontend
-    const safeSessionData = {
-      id: session.id,
-      amount_total: session.amount_total,
-      currency: session.currency,
-      status: session.status,
-      payment_status: session.payment_status,
-      customer_details: session.customer_details,
-      metadata: session.metadata,
-      created: session.created,
-      line_items: session.line_items
-        ? session.line_items.data.map((item) => ({
-            description: item.description,
-            quantity: item.quantity,
-            amount_total: item.amount_total,
-          }))
-        : [],
-    };
-
-    res.json(safeSessionData);
-  } catch (error) {
-    console.error("Error retrieving session:", error);
-    res.status(500).json({ error: "Failed to retrieve session details" });
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    logger.error(`Webhook signature verification failed:`, err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
-});
 
-// Handle successful subscription (webhook)
-app.post(
-  "/api/webhook",
-  express.raw({ type: "application/json" }),
-  (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-    } catch (err) {
-      console.log(`Webhook signature verification failed.`, err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    // Handle the event
+  try {
     switch (event.type) {
       case "checkout.session.completed":
         const session = event.data.object;
-        // Update user subscription in your database
-        console.log("Subscription successful:", session);
+        logger.info("Payment succeeded:", {
+          sessionId: session.id,
+          userId: session.metadata?.userId,
+        });
+
+        if (session.metadata?.userId) {
+          const tierMap = {
+            Basic: "BASIC",
+            Premium: "PREMIUM",
+            "Premium+": "PREMIUM_PLUS",
+          };
+
+          const tier = tierMap[session.metadata.planName] || "PREMIUM";
+
+          await updateUserDocument(session.metadata.userId, {
+            tier,
+            stripeCustomerId: session.customer,
+            stripeSubscriptionId: session.subscription,
+            subscriptionStatus: "active",
+            usageCount: 0,
+          });
+
+          logger.info(
+            `Updated user ${session.metadata.userId} to tier ${tier}`
+          );
+        }
         break;
+
       case "invoice.payment_succeeded":
-        // Handle successful payment
+        const invoice = event.data.object;
+        logger.info("Recurring payment succeeded:", invoice.id);
+
+        if (invoice.subscription) {
+          const subscription = await stripe.subscriptions.retrieve(
+            invoice.subscription
+          );
+          if (subscription.metadata?.userId) {
+            await updateUserDocument(subscription.metadata.userId, {
+              subscriptionStatus: "active",
+            });
+          }
+        }
         break;
+
       case "customer.subscription.deleted":
-        // Handle subscription cancellation
+        const deletedSubscription = event.data.object;
+        logger.info("Subscription cancelled:", deletedSubscription.id);
+
+        if (deletedSubscription.metadata?.userId) {
+          await updateUserDocument(deletedSubscription.metadata.userId, {
+            tier: "FREEMIUM",
+            subscriptionStatus: "cancelled",
+            stripeSubscriptionId: null,
+          });
+
+          logger.info(
+            `Downgraded user ${deletedSubscription.metadata.userId} to FREEMIUM`
+          );
+        }
         break;
+
+      case "customer.subscription.updated":
+        const updatedSubscription = event.data.object;
+        logger.info("Subscription updated:", updatedSubscription.id);
+
+        if (updatedSubscription.metadata?.userId) {
+          const status =
+            updatedSubscription.status === "active" ? "active" : "inactive";
+          await updateUserDocument(updatedSubscription.metadata.userId, {
+            subscriptionStatus: status,
+          });
+        }
+        break;
+
       default:
-        console.log(`Unhandled event type ${event.type}`);
+        logger.info(`Unhandled event type ${event.type}`);
     }
-
-    res.json({ received: true });
+  } catch (error) {
+    logger.error("Error processing webhook:", error);
+    return res.status(500).json({ error: "Webhook processing failed" });
   }
-);
 
-// Add a health check endpoint to verify environment variables
-app.get("/api/health", (req, res) => {
-  const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
-  const localhostUrl = frontendUrls.find(
-    (url) => url.includes("localhost") || url.includes("127.0.0.1")
-  );
-  const productionUrl = frontendUrls.find((url) => url.includes("https://"));
-
-  res.json({
-    status: "ok",
-    env_check: {
-      has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
-      has_frontend_urls: !!process.env.FRONTEND_URLS,
-      frontend_urls: frontendUrls,
-      localhost_url: localhostUrl,
-      production_url: productionUrl,
-      node_env: process.env.NODE_ENV,
-      port: process.env.PORT,
-    },
-  });
+  res.json({ received: true });
 });
-app.post("/api/verify-session", async (req, res) => {
-  try {
-    const { sessionId } = req.body;
 
-    if (!sessionId) {
-      return res.status(400).json({ error: "Session ID is required" });
-    }
+app.post(
+  "/api/verify-session",
+  [body("sessionId").isString().trim(), handleValidationErrors],
+  async (req, res) => {
+    try {
+      const { sessionId } = req.body;
 
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["line_items", "customer", "subscription"],
-    });
+      const session = await stripe.checkout.sessions.retrieve(sessionId, {
+        expand: ["line_items", "customer", "subscription"],
+      });
 
-    if (session.payment_status !== "paid") {
-      return res.status(400).json({
-        error: "Payment not completed",
+      if (session.payment_status !== "paid") {
+        return res.status(400).json({
+          error: "Payment not completed",
+          payment_status: session.payment_status,
+        });
+      }
+
+      const planName = session.metadata?.planName || "Premium";
+      const userId = session.metadata?.userId;
+
+      if (userId) {
+        const tierMap = {
+          Basic: "BASIC",
+          Premium: "PREMIUM",
+          "Premium+": "PREMIUM_PLUS",
+        };
+
+        const tier = tierMap[planName] || "PREMIUM";
+
+        await updateUserDocument(userId, {
+          tier,
+          stripeCustomerId: session.customer,
+          stripeSubscriptionId:
+            session.subscription?.id || session.subscription,
+          subscriptionStatus: "active",
+          usageCount: 0,
+        });
+      }
+
+      const safeSessionData = {
+        id: session.id,
+        planName: planName,
+        amount_total: session.amount_total,
+        currency: session.currency,
+        status: session.status,
+        payment_status: session.payment_status,
+        customer_email:
+          session.customer_details?.email || session.customer_email,
+        customer_id: session.customer,
+        userId: userId,
+        created: session.created,
+        subscription_id: session.subscription?.id || session.subscription,
+      };
+
+      logger.info("Session verified successfully:", {
+        sessionId: session.id,
+        userId: userId,
         payment_status: session.payment_status,
       });
+
+      res.json(safeSessionData);
+    } catch (error) {
+      logger.error("Error verifying session:", error);
+      res.status(500).json({
+        error: "Failed to verify session",
+        message: error.message,
+      });
     }
-
-    const planName = session.metadata?.planName || "Premium";
-
-    const safeSessionData = {
-      id: session.id,
-      planName: planName,
-      amount_total: session.amount_total,
-      currency: session.currency,
-      status: session.status,
-      payment_status: session.payment_status,
-      customer_email: session.customer_details?.email || session.customer_email,
-      customer_id: session.customer, // ADD THIS - Important for cancellation
-      userId: session.metadata?.userId,
-      created: session.created,
-      subscription_id: session.subscription?.id || session.subscription,
-    };
-
-    console.log("Session verified successfully:", {
-      sessionId: session.id,
-      customerId: session.customer, // ADD THIS LOG
-      subscriptionId: session.subscription,
-      planName: planName,
-      userId: session.metadata?.userId,
-      payment_status: session.payment_status,
-    });
-
-    res.json(safeSessionData);
-  } catch (error) {
-    console.error("Error verifying session:", error);
-    res.status(500).json({
-      error: "Failed to verify session",
-      message: error.message,
-    });
   }
-});
-
-// 3. UPDATE your cancel subscription endpoint to actually cancel in Stripe
-app.post("/api/cancel-subscription", async (req, res) => {
-  try {
-    const { customerId, subscriptionId } = req.body;
-
-    if (!customerId && !subscriptionId) {
-      return res.status(400).json({
-        error: "Either customerId or subscriptionId is required",
-      });
-    }
-
-    let subscription;
-
-    if (subscriptionId) {
-      // If we have subscription ID, cancel directly
-      subscription = await stripe.subscriptions.cancel(subscriptionId);
-      console.log(`Cancelled subscription ${subscriptionId}`);
-    } else if (customerId) {
-      // If we only have customer ID, find and cancel their active subscriptions
-      const subscriptions = await stripe.subscriptions.list({
-        customer: customerId,
-        status: "active",
-      });
-
-      if (subscriptions.data.length === 0) {
-        return res.status(404).json({
-          error: "No active subscriptions found for this customer",
-        });
-      }
-
-      // Cancel the first active subscription (assuming one subscription per customer)
-      subscription = await stripe.subscriptions.cancel(
-        subscriptions.data[0].id
-      );
-      console.log(
-        `Cancelled subscription ${subscriptions.data[0].id} for customer ${customerId}`
-      );
-    }
-
-    res.json({
-      success: true,
-      message: "Subscription cancelled successfully",
-      subscription: {
-        id: subscription.id,
-        status: subscription.status,
-        canceled_at: subscription.canceled_at,
-      },
-    });
-  } catch (error) {
-    console.error("Error cancelling subscription:", error);
-    res.status(500).json({
-      error: "Failed to cancel subscription",
-      message: error.message,
-    });
-  }
-});
-// --------------- DASHBOARD API END POINTS --------------- //
-// Add this to your existing server.js file
-
-// Cancel subscription endpoint
-app.post("/api/cancel-subscription", async (req, res) => {
-  try {
-    const { customerId, subscriptionId } = req.body;
-
-    if (!customerId && !subscriptionId) {
-      return res.status(400).json({
-        error: "Either customerId or subscriptionId is required",
-      });
-    }
-
-    let subscription;
-
-    if (subscriptionId) {
-      // If we have subscription ID, cancel directly
-      subscription = await stripe.subscriptions.cancel(subscriptionId);
-      console.log(`Cancelled subscription ${subscriptionId}`);
-    } else if (customerId) {
-      // If we only have customer ID, find and cancel their active subscriptions
-      const subscriptions = await stripe.subscriptions.list({
-        customer: customerId,
-        status: "active",
-      });
-
-      if (subscriptions.data.length === 0) {
-        return res.status(404).json({
-          error: "No active subscriptions found for this customer",
-        });
-      }
-
-      // Cancel the first active subscription (assuming one subscription per customer)
-      subscription = await stripe.subscriptions.cancel(
-        subscriptions.data[0].id
-      );
-      console.log(
-        `Cancelled subscription ${subscriptions.data[0].id} for customer ${customerId}`
-      );
-    }
-
-    res.json({
-      success: true,
-      message: "Subscription cancelled successfully",
-      subscription: {
-        id: subscription.id,
-        status: subscription.status,
-        canceled_at: subscription.canceled_at,
-      },
-    });
-  } catch (error) {
-    console.error("Error cancelling subscription:", error);
-    res.status(500).json({
-      error: "Failed to cancel subscription",
-      message: error.message,
-    });
-  }
-});
-
-//---------------- RESUME AND COVER LETTER GENERATION END POINTS --------------- //
-
-// Load instruction files
-const resumeSystemPrompt = fs.readFileSync("./Resume-Instructions.txt", "utf8");
-const coverLetterSystemPrompt = fs.readFileSync(
-  "./Cover-Letter-Instructions.txt",
-  "utf8"
 );
 
-// Chat feedback system prompt for focused document regeneration
+app.post(
+  "/api/cancel-subscription",
+  [
+    body("userId").isString().trim().escape(),
+    body("customerId").optional().isString().trim(),
+    body("subscriptionId").optional().isString().trim(),
+    handleValidationErrors,
+    verifyFirebaseToken,
+  ],
+  async (req, res) => {
+    try {
+      const { customerId, subscriptionId, userId } = req.body;
+
+      if (req.user.uid !== userId) {
+        return res
+          .status(403)
+          .json({ error: "Forbidden: Cannot cancel other user subscription" });
+      }
+
+      if (!customerId && !subscriptionId) {
+        return res.status(400).json({
+          error: "Either customerId or subscriptionId is required",
+        });
+      }
+
+      let subscription;
+
+      if (subscriptionId) {
+        subscription = await stripe.subscriptions.cancel(subscriptionId);
+        logger.info(
+          `Cancelled subscription ${subscriptionId} for user ${userId}`
+        );
+      } else if (customerId) {
+        const subscriptions = await stripe.subscriptions.list({
+          customer: customerId,
+          status: "active",
+        });
+
+        if (subscriptions.data.length === 0) {
+          return res.status(404).json({
+            error: "No active subscriptions found for this customer",
+          });
+        }
+
+        subscription = await stripe.subscriptions.cancel(
+          subscriptions.data[0].id
+        );
+        logger.info(
+          `Cancelled subscription ${subscriptions.data[0].id} for customer ${customerId}`
+        );
+      }
+
+      await updateUserDocument(userId, {
+        tier: "FREEMIUM",
+        subscriptionStatus: "cancelled",
+        stripeSubscriptionId: null,
+      });
+
+      res.json({
+        success: true,
+        message: "Subscription cancelled successfully",
+        subscription: {
+          id: subscription.id,
+          status: subscription.status,
+          canceled_at: subscription.canceled_at,
+        },
+      });
+    } catch (error) {
+      logger.error("Error cancelling subscription:", error);
+      res.status(500).json({
+        error: "Failed to cancel subscription",
+        message: error.message,
+      });
+    }
+  }
+);
+
+// ============ AI GENERATION ENDPOINTS ============
 const chatFeedbackPrompt = `
 You are a professional resume and cover letter writer. You're receiving user feedback to improve their document. 
 The user will provide:
@@ -453,7 +699,6 @@ Remember to:
 The output should be a complete, standalone HTML document ready for display.
 `;
 
-// Question generation system prompt
 const questionGenerationPrompt = `
 You are an expert interview coach and hiring manager. Based on the provided job description, generate a comprehensive list of interview questions that a company would typically ask for this role.
 
@@ -487,43 +732,27 @@ Return the response as a JSON object with this structure:
 Only return the JSON object, no additional text or explanation.
 `;
 
-// Health check endpoint
-app.get("/", (req, res) => {
-  res.send("API is running");
-});
-
-// Claude API endpoint for resume generation
 app.post("/api/create-resume", async (req, res) => {
   try {
     const { jobDescription } = req.body;
-    console.log(
-      "Job Description received length:",
-      jobDescription ? jobDescription.length : 0
-    );
 
-    // Check if job description is empty or undefined
     if (!jobDescription || jobDescription.trim() === "") {
       return res.status(400).json({ error: "Job description cannot be empty" });
     }
 
-    // Get API key from environment variable
     const apiKey = process.env.CLAUDE_API_KEY;
-
     if (!apiKey) {
-      return res.status(500).json({ error: "API key not configured" });
+      return res.status(500).json({ error: "Claude API key not configured" });
     }
 
-    // Determine if this is a regeneration with feedback
     const isFeedbackRequest =
       jobDescription.includes("USER FEEDBACK") &&
       jobDescription.includes("CURRENT RESUME");
 
-    // Use the appropriate system prompt
     const systemPrompt = isFeedbackRequest
       ? chatFeedbackPrompt
       : resumeSystemPrompt;
 
-    // Call Claude API with the combined job description and resume
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
@@ -548,52 +777,34 @@ app.post("/api/create-resume", async (req, res) => {
 
     return res.json(response.data);
   } catch (error) {
-    console.error("Error:", error.message);
-
-    // Add more detailed error logging
-    if (error.response) {
-      console.error("API response status:", error.response.status);
-      console.error("API response data:", error.response.data);
-    }
-
+    logger.error("Resume generation error:", error);
     return res.status(500).json({
       error: error.message || "Unknown error occurred",
     });
   }
 });
 
-// Claude API endpoint for cover letter generation
 app.post("/api/create-cover-letter", async (req, res) => {
   try {
     const { jobDescription } = req.body;
-    console.log(
-      "Cover Letter job description received length:",
-      jobDescription ? jobDescription.length : 0
-    );
 
-    // Check if job description is empty or undefined
     if (!jobDescription || jobDescription.trim() === "") {
       return res.status(400).json({ error: "Job description cannot be empty" });
     }
 
-    // Get API key from environment variable
     const apiKey = process.env.CLAUDE_API_KEY;
-
     if (!apiKey) {
-      return res.status(500).json({ error: "API key not configured" });
+      return res.status(500).json({ error: "Claude API key not configured" });
     }
 
-    // Determine if this is a regeneration with feedback
     const isFeedbackRequest =
       jobDescription.includes("USER FEEDBACK") &&
       jobDescription.includes("CURRENT COVER LETTER");
 
-    // Use the appropriate system prompt
     const systemPrompt = isFeedbackRequest
       ? chatFeedbackPrompt
       : coverLetterSystemPrompt;
 
-    // Call Claude API with the job description and resume for cover letter generation
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
@@ -618,14 +829,7 @@ app.post("/api/create-cover-letter", async (req, res) => {
 
     return res.json(response.data);
   } catch (error) {
-    console.error("Cover letter generation error:", error.message);
-
-    // Add more detailed error logging
-    if (error.response) {
-      console.error("API response status:", error.response.status);
-      console.error("API response data:", error.response.data);
-    }
-
+    logger.error("Cover letter generation error:", error);
     return res.status(500).json({
       error:
         error.message ||
@@ -634,28 +838,19 @@ app.post("/api/create-cover-letter", async (req, res) => {
   }
 });
 
-// Claude API endpoint for question generation
 app.post("/api/generate-questions", async (req, res) => {
   try {
     const { jobDescription } = req.body;
-    console.log(
-      "Question generation - Job Description received length:",
-      jobDescription ? jobDescription.length : 0
-    );
 
-    // Check if job description is empty or undefined
     if (!jobDescription || jobDescription.trim() === "") {
       return res.status(400).json({ error: "Job description cannot be empty" });
     }
 
-    // Get API key from environment variable
     const apiKey = process.env.CLAUDE_API_KEY;
-
     if (!apiKey) {
-      return res.status(500).json({ error: "API key not configured" });
+      return res.status(500).json({ error: "Claude API key not configured" });
     }
 
-    // Call Claude API for question generation
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
       {
@@ -680,14 +875,7 @@ app.post("/api/generate-questions", async (req, res) => {
 
     return res.json(response.data);
   } catch (error) {
-    console.error("Question generation error:", error.message);
-
-    // Add more detailed error logging
-    if (error.response) {
-      console.error("API response status:", error.response.status);
-      console.error("API response data:", error.response.data);
-    }
-
+    logger.error("Question generation error:", error);
     return res.status(500).json({
       error:
         error.message || "Unknown error occurred during question generation",
@@ -1227,17 +1415,52 @@ Please analyze and identify ONLY the keywords that appear in BOTH the job descri
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  const frontendUrls = process.env.FRONTEND_URLS?.split(",") || [];
-  const productionUrl =
-    frontendUrls.find((url) => url.includes("https://")) || frontendUrls[0];
+app.use((error, req, res, next) => {
+  logger.error("Unhandled error:", error);
+  res.status(500).json({
+    error: "Internal server error",
+    message:
+      process.env.NODE_ENV === "production"
+        ? "Something went wrong"
+        : error.message,
+  });
+});
+
+// 404 handler
+app.use("*", (req, res) => {
+  res.status(404).json({
+    error: "Not found",
+    message: `Route ${req.originalUrl} not found`,
+  });
+});
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received. Shutting down gracefully...");
+  server.close(() => {
+    logger.info("Process terminated");
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", () => {
+  logger.info("SIGINT received. Shutting down gracefully...");
+  server.close(() => {
+    logger.info("Process terminated");
+    process.exit(0);
+  });
+});
+
+const server = app.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
+  logger.info(`Frontend URLs: ${process.env.FRONTEND_URLS}`);
 
   console.log("Environment check:", {
     has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
     has_frontend_urls: !!process.env.FRONTEND_URLS,
-    frontend_urls: frontendUrls,
-    production_url_for_stripe: productionUrl,
+    has_firebase_key: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
+    has_claude_key: !!process.env.CLAUDE_API_KEY,
+    node_env: process.env.NODE_ENV,
   });
 });
 
